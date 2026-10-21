@@ -15,8 +15,60 @@ fi
 echo "Running bootloader-config..."
 
 if [ -d /sys/firmware/efi/efivars ]; then
-    echo " * Installing grub-efi (uefi)..."
-    DEBIAN_FRONTEND=noninteractive chroot $CHROOT apt-get -y install grub-efi
+    echo " * Installing shim + Debian-signed GRUB (UEFI Secure Boot)..."
+
+    # shim-signed is signed by the Microsoft UEFI CA; grub-efi-amd64-signed
+    # is signed by Debian's UEFI CA. BlankOn ships Debian's signed kernel, so
+    # using Debian's chain keeps the whole trust chain valid without BlankOn
+    # having to manage its own UEFI keys.
+    DEBIAN_FRONTEND=noninteractive chroot $CHROOT apt-get -y install \
+        efibootmgr \
+        grub-efi-amd64-bin \
+        grub-efi-amd64-signed \
+        mokutil \
+        shim-signed
+
+    EFI_ID=blankon
+    EFI_DIR=$CHROOT/boot/efi
+    SIGNED_GRUB=$CHROOT/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed
+    SHIM=$CHROOT/usr/lib/shim/shimx64.efi.signed
+
+    # /boot/grub is created by grub-install. Without it, the update-grub run
+    # at the end of this script fails with "Directory nonexistent".
+    mkdir -p "$CHROOT/boot/grub"
+
+    # Lay down the module tree and the fallback loader. grub-install in this
+    # archive has no --signed option, so the signed binaries are copied in
+    # below. --no-nvram keeps grub-install from creating a boot entry that
+    # points straight at grubx64.efi (firmware rejects Debian's signature;
+    # only shim is trusted by the firmware).
+    chroot $CHROOT /usr/sbin/grub-install \
+        --target=x86_64-efi \
+        --efi-directory=/boot/efi \
+        --bootloader-id=$EFI_ID \
+        --recheck --no-floppy --force-extra-removable --no-nvram
+
+    # Replace the unsigned binaries with the signed chain: firmware trusts
+    # shim (Microsoft CA), shim trusts Debian's GRUB, GRUB boots the
+    # Debian-signed kernel. No MOK enrollment is needed.
+    install -m 0644 "$SIGNED_GRUB" "$EFI_DIR/EFI/$EFI_ID/grubx64.efi"
+    install -m 0644 "$SHIM" "$EFI_DIR/EFI/$EFI_ID/shimx64.efi"
+    install -m 0644 "$SHIM" "$EFI_DIR/EFI/BOOT/BOOTX64.EFI"
+    install -m 0644 "$SIGNED_GRUB" "$EFI_DIR/EFI/BOOT/grubx64.efi"
+    if [ -f "$CHROOT/usr/lib/shim/mmx64.efi.signed" ]; then
+        install -m 0644 "$CHROOT/usr/lib/shim/mmx64.efi.signed" \
+            "$EFI_DIR/EFI/$EFI_ID/mmx64.efi"
+        install -m 0644 "$CHROOT/usr/lib/shim/mmx64.efi.signed" \
+            "$EFI_DIR/EFI/BOOT/mmx64.efi"
+    fi
+
+    # Debian's signed GRUB has /EFI/debian compiled in as its prefix, so it
+    # looks for the config there no matter which --bootloader-id was used.
+    # Point that config at the real menu in /boot/grub/grub.cfg.
+    uuid=$(chroot $CHROOT /usr/sbin/grub-probe -t fs_uuid /)
+    mkdir -p "$EFI_DIR/EFI/debian"
+    printf 'search.fs_uuid %s root\nset prefix=($root)/boot/grub\nconfigfile $prefix/grub.cfg\n' \
+        "$uuid" > "$EFI_DIR/EFI/debian/grub.cfg"
 else
     echo " * install grub... (bios)"
     DEBIAN_FRONTEND=noninteractive chroot $CHROOT apt-get -y install grub-pc
