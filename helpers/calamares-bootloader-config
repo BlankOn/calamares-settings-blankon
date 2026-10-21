@@ -14,6 +14,11 @@ fi
 
 echo "Running bootloader-config..."
 
+# /boot/grub is created by grub-install, which only runs later in Calamares'
+# bootloader module. The update-grub call at the end of this script needs the
+# directory to exist, otherwise it fails with "Directory nonexistent".
+mkdir -p "$CHROOT/boot/grub"
+
 if [ -d /sys/firmware/efi/efivars ]; then
     echo " * Installing shim + Debian-signed GRUB (UEFI Secure Boot)..."
 
@@ -32,10 +37,6 @@ if [ -d /sys/firmware/efi/efivars ]; then
     EFI_DIR=$CHROOT/boot/efi
     SIGNED_GRUB=$CHROOT/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed
     SHIM=$CHROOT/usr/lib/shim/shimx64.efi.signed
-
-    # /boot/grub is created by grub-install. Without it, the update-grub run
-    # at the end of this script fails with "Directory nonexistent".
-    mkdir -p "$CHROOT/boot/grub"
 
     # Lay down the module tree and the fallback loader. grub-install in this
     # archive has no --signed option, so the signed binaries are copied in
